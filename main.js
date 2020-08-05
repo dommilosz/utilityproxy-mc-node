@@ -107,10 +107,17 @@ function startQueuing() {
 				playerId = data.entityId;
 			}
 			
-
+			if(!"position look position_look keep_alive update_time map_chunk entity_head_rotation sound_effect rel_entity_move".includes(meta.name)){
+				//console.log([meta.name,data]);
+				
+			}
 			if (!proxyClient || proxyClient.ended) {
 
 			} else {
+				if(data.entityId){
+					applyESPOnEntity(data,meta);
+				}
+				
 				// if we are connected to the proxy, forward the packet we recieved to our game.
 				filterPacketAndSend(data, meta, proxyClient);
 			}
@@ -232,7 +239,8 @@ function doUPX(data,meta,message){
         chunkscmd(data,meta,message);
         clearchunkscmd(data,meta,message);
         reconnectcmd(data,meta,message);
-        tryjumpcmd(data,meta,message);
+		tryjumpcmd(data,meta,message);
+		ESPcmd(data,meta,message);
     }
 }
 
@@ -293,6 +301,20 @@ function reconnectcmd(data,meta,message){
               proxyClient
         );
         client.end();
+    }
+}
+var ESP = false;
+function ESPcmd(data,meta,message){
+    if (message.startsWith("/upx esp")) {
+		ESP = !ESP;
+         filterPacketAndSend(
+            {
+                message: `{"text":"UPX: ESP:${ESP}"}`,
+                position: 1,
+            },
+            { name: "chat" },
+              proxyClient
+        );
     }
 }
 function tryjumpcmd(data,meta,message){
@@ -501,5 +523,49 @@ function modifyPacketToTryJump(data,meta){
 	}
 	
 	return;
+	
+}
+xrmetadata = {};
+function applyESPOnEntity(data,meta){
+	var entid = data.entityId;
+	if(!xrmetadata[entid])xrmetadata[entid] = {};
+	if(!xrmetadata[entid]["metadata"])xrmetadata[entid]["metadata"] = [ { key: 0, type: 0, value: 0 } ];
+	if(!xrmetadata[entid]["enabled"])xrmetadata[entid]["enabled"] = false;
+	if(meta.name == "entity_metadata"){
+		xrmetadata[entid]["metadata"] = data.metadata;
+	}
+	var metadata = JSON.parse(JSON.stringify(xrmetadata[entid])).metadata;
+	
+	var enabledOnServer = false;
+	var enabled = xrmetadata[entid]["enabled"];
+	
+	metadata.forEach((element) => {
+		if(element.type==0&&element.key==0){
+			if(((element.value & 64) / 64) == 1){enabledOnServer = true;}
+		}
+	});
+	if(enabledOnServer==true)return;
+	if(ESP&&enabled)return;
+	if(!ESP&&!enabled)return;
+
+	if(ESP){
+		metadata.forEach((element) => {
+			if(element.type==0&&element.key==0){
+				element.value |= 0x40;
+			}
+		});
+		xrmetadata[entid]["enabled"] = true;
+	}else{
+		metadata.forEach((element) => {
+			if(element.type==0&&element.key==0){
+				element.value &= ~0x40;
+			}
+		});
+		xrmetadata[entid]["enabled"] = false;
+	}
+	proxyClient.write("entity_metadata",{
+		entityId:entid,
+		metadata:metadata
+	})
 	
 }
