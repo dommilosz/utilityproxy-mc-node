@@ -15,6 +15,7 @@ let reconnectIntervalObj; // self explanatory
 var currentSession; //Let's save the session to avoid re-authing every time we try to reconnect.
 var chunk = [];
 var lastPos;
+startServer()
 // function to disconnect from the server
 function stop() {
 	client.end(); // disconnect
@@ -55,8 +56,55 @@ function QueueReconnect() {
 	reconnectIntervalObj = setTimeout(reconnect, 100); // reconnect after 100 ms
 }
 
+function startServer(){
+	console.log("Server Started");
+	server = mc.createServer({
+		// create a server for us to connect to
+		"online-mode": false,
+		encryption: true,
+		host: config.debug.bindip,
+		port: config.ports.minecraft,
+		version: config.MCversion,
+		"max-players": (maxPlayers = 1),
+	});
+
+	server.on("login", (newProxyClient) => {
+		// handle login
+		startQueuing();
+		tjreset();
+
+		newProxyClient.on("packet", (data, meta) => {
+			// redirect everything we do to 2b2t (except internal commands)
+			let chatMessage = "NONCHAT";
+			if (meta.name === "chat") {
+				chatMessage = data.message;
+			}
+			doAll(data,meta,chatMessage,proxyClient,newProxyClient);
+			var packet = modifyPacketToTryJump(data,meta);
+			if(packet==false)return;
+			if(packet)
+			{
+				data = packet.data;
+				meta = packet.meta;
+			}
+			if(!commandexecuted)
+			{
+				try{
+				filterPacketAndSend(data, meta, client);}catch{}
+			}
+			
+		});
+
+		proxyClient = newProxyClient;
+	});
+	server.on("disconnect", (newProxyClient) => {
+		stop()
+	})
+}
+var clientconnected = false;
 // function to start the whole thing
 function startQueuing() {
+	clientconnected = false;
 	console.log("Queuing Started");
 	var playerId;
 	if(secrets.online_mode){
@@ -90,30 +138,18 @@ function startQueuing() {
 	client.on("packet", (data, meta) => {
 		// each time 2b2t sends a packet
 		try {
-			if (meta.name === "map_chunk") {
-				chunk.push([data, meta, data.x, data.z]);
-			}
-			if (meta.name === "position") {
-				lastPos = data;
-			}
-			if (meta.name === "unload_chunk") {
-				chunk = chunk.filter(function (element) {
-					return !(
-						element[2] === data.chunkX && element[3] === data.chunkZ
-					);
-				});
-			}
-			if (meta.name == "login") {
-				playerId = data.entityId;
-			}
-			
 			if(!"position look position_look keep_alive update_time map_chunk entity_head_rotation sound_effect rel_entity_move".includes(meta.name)){
 				//console.log([meta.name,data]);
 				
 			}
 			if (!proxyClient || proxyClient.ended) {
-
+				if(clientconnected){
+					console.log("Client Disconnected");
+					stop();
+				}
+				clientconnected = false;
 			} else {
+				clientconnected = true;
 				if(data.entityId){
 					applyESPOnEntity(data,meta);
 				}
@@ -129,7 +165,7 @@ function startQueuing() {
 	// set up actions in case we get disconnected.
 	client.on("end", (err) => {
 		console.log("end", err);
-		QueueReconnect();
+		//QueueReconnect();
 	});
 
 	client.on("error", (err) => {
@@ -137,92 +173,18 @@ function startQueuing() {
 		QueueReconnect();
 	});
 
-	server = mc.createServer({
-		// create a server for us to connect to
-		"online-mode": false,
-		encryption: true,
-		host: config.debug.bindip,
-		port: config.ports.minecraft,
-		version: config.MCversion,
-		"max-players": (maxPlayers = 1),
-	});
 
-	server.on("login", (newProxyClient) => {
-		// handle login
-		newProxyClient.write("login", {
-			entityId: playerId,
-			levelType: "default",
-			gameMode: 0,
-			dimension: 0,
-			difficulty: 2,
-			maxPlayers: server.maxPlayers,
-			reducedDebugInfo: false,
-		});
-		tjreset();
-		if (lastPos) {
-			newProxyClient.write("position", lastPos);
-			console.log("Writing lastPos to client");
-		} else {
-			newProxyClient.write("position", {
-				x: 0,
-				y: 1.62,
-				z: 0,
-				yaw: 0,
-				pitch: 0,
-				flags: 0x00,
-			});
-		}
-		if (chunk.length >= 1) {
-			chunk.forEach(function (element) {
-				filterPacketAndSend(element[0], element[1], newProxyClient);
-			});
-			filterPacketAndSend(
-				{
-					message:
-						'{"text":"2b2w: Sent:' +
-						chunk.length +
-						' chunks to the client on connect"}',
-					position: 1,
-				},
-				{ name: "chat" },
-				newProxyClient
-			);
-		}
-
-		newProxyClient.on("packet", (data, meta) => {
-			// redirect everything we do to 2b2t (except internal commands)
-			let chatMessage = "NONCHAT";
-			if (meta.name === "chat") {
-				chatMessage = data.message;
-			}
-			doAll(data,meta,chatMessage,proxyClient,newProxyClient);
-			var packet = modifyPacketToTryJump(data,meta);
-			if(packet==false)return;
-			if(packet)
-			{
-				data = packet.data;
-				meta = packet.meta;
-			}
-			if(!commandexecuted)
-			{
-				filterPacketAndSend(data, meta, client);
-			}
-			
-		});
-
-		proxyClient = newProxyClient;
-	});
 }
 
 //function to filter out some tjpackets that would make us disconnect otherwise.
 //this is where you could filter out tjpackets with sign data to prevent chunk bans.
 function filterPacketAndSend(data, meta, dest) {
-	if (meta.name != "keep_alive" && meta.name != "update_time") {
+	if (meta.name != "keep_alive" && meta.name != "update_time"&& meta.state != "login") {
 		//keep alive tjpackets are handled by the client we created, so if we were to forward them, the minecraft client would respond too and the server would kick us for responding twice.
 		dest.write(meta.name, data);
 	}
 }
-startQueuing(); //Let's start instantly
+//startQueuing(); //Let's start instantly
 
 var commandexecuted = false;
 var properexecuted = false;
